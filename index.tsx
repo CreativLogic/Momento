@@ -13,6 +13,7 @@ import './visual-3d';
 interface TranscriptionEntry {
   speaker: 'user' | 'ai';
   text: string;
+  isFinal: boolean;
 }
 
 @customElement('gdm-live-audio')
@@ -21,9 +22,7 @@ export class GdmLiveAudio extends LitElement {
   @state() status = '';
   @state() error = '';
   @state() selectedVoice = 'Zephyr';
-  @state() transcriptionHistory: TranscriptionEntry[] = [];
-  @state() currentInputTranscription = '';
-  @state() currentOutputTranscription = '';
+  @state() conversation: TranscriptionEntry[] = [];
 
   private readonly voices = [
     'Zephyr',
@@ -176,6 +175,26 @@ export class GdmLiveAudio extends LitElement {
       color: #98fb98; /* Pale Green */
     }
 
+    .cursor {
+      display: inline-block;
+      width: 8px;
+      height: 1.2em;
+      background-color: white;
+      animation: blink 1s step-end infinite;
+      vertical-align: text-bottom;
+      margin-left: 4px;
+    }
+
+    @keyframes blink {
+      0%,
+      100% {
+        opacity: 1;
+      }
+      50% {
+        opacity: 0;
+      }
+    }
+
     @media (max-width: 600px) {
       .controls button {
         width: 56px;
@@ -250,30 +269,49 @@ export class GdmLiveAudio extends LitElement {
           }
 
           if (message.serverContent?.inputTranscription) {
-            this.currentInputTranscription +=
-              message.serverContent.inputTranscription.text;
+            const text = message.serverContent.inputTranscription.text;
+            const lastEntry = this.conversation[this.conversation.length - 1];
+            if (
+              lastEntry &&
+              lastEntry.speaker === 'user' &&
+              !lastEntry.isFinal
+            ) {
+              this.conversation = [
+                ...this.conversation.slice(0, -1),
+                {...lastEntry, text: lastEntry.text + text},
+              ];
+            } else {
+              this.conversation = [
+                ...this.conversation,
+                {speaker: 'user', text, isFinal: false},
+              ];
+            }
           }
 
           if (message.serverContent?.outputTranscription) {
-            this.currentOutputTranscription +=
-              message.serverContent.outputTranscription.text;
+            const text = message.serverContent.outputTranscription.text;
+            const lastEntry = this.conversation[this.conversation.length - 1];
+            if (
+              lastEntry &&
+              lastEntry.speaker === 'ai' &&
+              !lastEntry.isFinal
+            ) {
+              this.conversation = [
+                ...this.conversation.slice(0, -1),
+                {...lastEntry, text: lastEntry.text + text},
+              ];
+            } else {
+              this.conversation = [
+                ...this.conversation,
+                {speaker: 'ai', text, isFinal: false},
+              ];
+            }
           }
 
           if (message.serverContent?.turnComplete) {
-            const fullInput = this.currentInputTranscription.trim();
-            const fullOutput = this.currentOutputTranscription.trim();
-
-            const newHistory = [...this.transcriptionHistory];
-            if (fullInput) {
-              newHistory.push({speaker: 'user', text: fullInput});
-            }
-            if (fullOutput) {
-              newHistory.push({speaker: 'ai', text: fullOutput});
-            }
-            this.transcriptionHistory = newHistory;
-
-            this.currentInputTranscription = '';
-            this.currentOutputTranscription = '';
+            this.conversation = this.conversation.map((entry) =>
+              entry.isFinal ? entry : {...entry, isFinal: true},
+            );
           }
 
           const interrupted = message.serverContent?.interrupted;
@@ -398,9 +436,7 @@ export class GdmLiveAudio extends LitElement {
         .then((session) => session.close())
         .catch(console.error);
     }
-    this.transcriptionHistory = [];
-    this.currentInputTranscription = '';
-    this.currentOutputTranscription = '';
+    this.conversation = [];
     this.initSession();
     this.updateStatus('Session cleared.');
   }
@@ -411,10 +447,13 @@ export class GdmLiveAudio extends LitElement {
   }
 
   private exportTranscript() {
-    if (this.transcriptionHistory.length === 0) return;
+    if (this.conversation.length === 0) return;
 
-    const transcriptText = this.transcriptionHistory
-      .map((entry) => `${entry.speaker === 'user' ? 'User' : 'AI'}: ${entry.text}`)
+    const transcriptText = this.conversation
+      .map(
+        (entry) =>
+          `${entry.speaker === 'user' ? 'User' : 'AI'}: ${entry.text}`,
+      )
       .join('\n\n');
 
     const blob = new Blob([transcriptText], {type: 'text/plain;charset=utf-8'});
@@ -432,27 +471,19 @@ export class GdmLiveAudio extends LitElement {
     return html`
       <div>
         <div class="transcript-container" aria-live="polite" aria-atomic="true">
-          ${this.transcriptionHistory.map(
+          ${this.conversation.map(
             (entry) => html`
               <div
                 class="transcript-entry ${entry.speaker === 'user'
                   ? 'user-text'
                   : 'ai-text'}">
                 <strong>${entry.speaker === 'user' ? 'You' : 'AI'}:</strong>
-                ${entry.text}
+                ${entry.text}${!entry.isFinal
+                  ? html`<span class="cursor"></span>`
+                  : ''}
               </div>
             `,
           )}
-          ${this.currentInputTranscription
-            ? html`<div class="transcript-entry user-text">
-                <strong>You:</strong> ${this.currentInputTranscription}
-              </div>`
-            : ''}
-          ${this.currentOutputTranscription
-            ? html`<div class="transcript-entry ai-text">
-                <strong>AI:</strong> ${this.currentOutputTranscription}
-              </div>`
-            : ''}
         </div>
         <div class="controls">
           <div class="voice-selector">
@@ -476,7 +507,7 @@ export class GdmLiveAudio extends LitElement {
           <button
             id="exportButton"
             @click=${this.exportTranscript}
-            ?disabled=${this.transcriptionHistory.length === 0}
+            ?disabled=${this.conversation.length === 0}
             aria-label="Export Transcript">
             <svg
               xmlns="http://www.w3.org/2000/svg"
